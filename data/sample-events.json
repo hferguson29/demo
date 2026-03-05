@@ -1,0 +1,124 @@
+{
+  "sampleEvents": [
+    {
+      "description": "Ammunition manifest ready for vessel at MOTCO Pier 2",
+      "request": {
+        "type": "MANIFEST_READY",
+        "tcn": "W25K1A0456789XA",
+        "sourceSystem": "CMOS",
+        "sourceLocation": "MOTCO_PIER2",
+        "payload": {
+          "vesselName": "USNS Watkins",
+          "voyageNumber": "V2026-0312",
+          "cargoType": "AMMUNITION",
+          "containerCount": 48,
+          "hazmatClass": "1.1",
+          "netExplosiveWeight": "245000 lbs",
+          "destinationPort": "APRA_HARBOR_GUAM",
+          "estimatedDeparture": "2026-03-10T08:00:00Z",
+          "pier": "PIER_2",
+          "loadingUnit": "834TH_TRANS_BN"
+        }
+      }
+    },
+    {
+      "description": "Vessel departed MOTCO with ammunition cargo",
+      "request": {
+        "type": "SHIPMENT_DEPARTED",
+        "tcn": "W25K1A0456789XA",
+        "sourceSystem": "GATES",
+        "sourceLocation": "MOTCO",
+        "payload": {
+          "vesselName": "USNS Watkins",
+          "voyageNumber": "V2026-0312",
+          "departureTime": "2026-03-10T09:15:00Z",
+          "destinationPort": "APRA_HARBOR_GUAM",
+          "estimatedArrival": "2026-03-24T14:00:00Z",
+          "containerCount": 48,
+          "dttsTrackingActive": true,
+          "satelliteTrackerId": "DTTS-SAT-99421"
+        }
+      }
+    },
+    {
+      "description": "Shipment delayed due to port congestion at destination",
+      "request": {
+        "type": "SHIPMENT_DELAYED",
+        "tcn": "W25K1A0456789XA",
+        "sourceSystem": "DTTS",
+        "sourceLocation": "PACIFIC_REGION",
+        "payload": {
+          "vesselName": "USNS Watkins",
+          "voyageNumber": "V2026-0312",
+          "delayReason": "PORT_CONGESTION",
+          "delayDescription": "Apra Harbor berth occupied — estimated 72hr delay",
+          "originalETA": "2026-03-24T14:00:00Z",
+          "revisedETA": "2026-03-27T14:00:00Z",
+          "impactAssessment": "MODERATE",
+          "sustainmentImpact": "Forward unit ammunition stocks adequate through 2026-03-30"
+        }
+      }
+    },
+    {
+      "description": "RFID scan at MOTCO staging area checkpoint",
+      "request": {
+        "type": "RFID_SCAN_EVENT",
+        "tcn": "W25K1A0456789XA",
+        "sourceSystem": "RFID_INTERROGATOR",
+        "sourceLocation": "MOTCO_STAGING_AREA_3",
+        "payload": {
+          "rfidTagId": "JDTAV-2025-08891",
+          "scanTime": "2026-03-09T14:22:00Z",
+          "checkpoint": "STAGING_AREA_3_GATE",
+          "containerNumber": "MSKU7294810",
+          "direction": "INBOUND_TO_PIER",
+          "sensorData": {
+            "temperature": "72F",
+            "humidity": "45%",
+            "tamperSeal": "INTACT"
+          }
+        }
+      }
+    },
+    {
+      "description": "Forward unit requests emergency ammunition resupply",
+      "request": {
+        "type": "SUSTAINMENT_REQUEST",
+        "tcn": "P26G3B0012345XC",
+        "sourceSystem": "THEATER_LOGISTICS",
+        "sourceLocation": "CAMP_BLAZ_GUAM",
+        "payload": {
+          "requestingUnit": "3RD_MARINE_LITTORAL_REGIMENT",
+          "requestPriority": "URGENT",
+          "requestedItems": [
+            { "dodic": "A075", "description": "CTG 5.56MM BALL", "quantity": 50000 },
+            { "dodic": "C445", "description": "PROJ 155MM HE", "quantity": 200 }
+          ],
+          "requiredDeliveryDate": "2026-03-15T00:00:00Z",
+          "justification": "Exercise BALIKATAN 2026 ammunition expenditure exceeded projections"
+        }
+      }
+    },
+    {
+      "description": "Shipment diverted due to contested port conditions",
+      "request": {
+        "type": "DIVERSION_ALERT",
+        "tcn": "W25K1A0456789XA",
+        "sourceSystem": "USTRANSCOM_J3",
+        "sourceLocation": "SCOTT_AFB",
+        "payload": {
+          "vesselName": "USNS Watkins",
+          "voyageNumber": "V2026-0312",
+          "diversionReason": "CONTESTED_PORT",
+          "originalDestination": "APRA_HARBOR_GUAM",
+          "newDestination": "WHITE_BEACH_OKINAWA",
+          "diversionOrderedBy": "USTRANSCOM_J3",
+          "diversionTime": "2026-03-22T03:45:00Z",
+          "newETA": "2026-03-26T08:00:00Z",
+          "impactAssessment": "HIGH",
+          "notes": "Apra Harbor access contested — rerouting to alternate port. Coordinate with INDOPACOM J4 for onward movement."
+        }
+      }
+    }
+  ]
+}
