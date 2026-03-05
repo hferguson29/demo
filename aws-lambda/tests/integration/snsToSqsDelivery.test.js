@@ -52,6 +52,7 @@ describe('SNS → SQS → Lambda Delivery Chain Integration', () => {
     process.env.EVENTS_TABLE = 'motco-events-test';
     process.env.SUBSCRIBERS_TABLE = 'motco-subscribers-test';
     process.env.SNS_TOPIC_ARN_PREFIX = 'arn:aws:sns:us-east-1:123456789:motco-';
+    process.env.ENVIRONMENT = 'dev';
     process.env.TARGET_SYSTEM = 'GATES';
     process.env.TARGET_ENDPOINT = '';
     jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -85,7 +86,7 @@ describe('SNS → SQS → Lambda Delivery Chain Integration', () => {
     expect(ingestResult.statusCode).toBe(201);
     expect(ingestBody.status).toBe('PUBLISHED');
     expect(publishToTopic).toHaveBeenCalledWith(
-      'arn:aws:sns:us-east-1:123456789:motco-MANIFEST_READY',
+      'arn:aws:sns:us-east-1:123456789:motco-MANIFEST_READY-dev',
       expect.objectContaining({
         type: 'MANIFEST_READY',
         tcn: 'W25K1A0456789XA',
@@ -225,7 +226,7 @@ describe('SNS → SQS → Lambda Delivery Chain Integration', () => {
 
     // Verify SNS republish with retry flag
     expect(publishToTopic).toHaveBeenCalledWith(
-      'arn:aws:sns:us-east-1:123456789:motco-SHIPMENT_DEPARTED',
+      'arn:aws:sns:us-east-1:123456789:motco-SHIPMENT_DEPARTED-dev',
       expect.objectContaining({
         id: 'evt-retry-001',
         isRetry: true,
@@ -250,7 +251,7 @@ describe('SNS → SQS → Lambda Delivery Chain Integration', () => {
     // Verify single SNS publish (fan-out happens via topic subscriptions)
     expect(publishToTopic).toHaveBeenCalledTimes(1);
     expect(publishToTopic).toHaveBeenCalledWith(
-      'arn:aws:sns:us-east-1:123456789:motco-DIVERSION_ALERT',
+      'arn:aws:sns:us-east-1:123456789:motco-DIVERSION_ALERT-dev',
       expect.objectContaining({ type: 'DIVERSION_ALERT' })
     );
 
@@ -288,6 +289,7 @@ describe('DynamoDB Persistence Integration', () => {
     jest.clearAllMocks();
     process.env.EVENTS_TABLE = 'motco-events-test';
     process.env.SNS_TOPIC_ARN_PREFIX = 'arn:aws:sns:us-east-1:123456789:motco-';
+    process.env.ENVIRONMENT = 'dev';
   });
 
   test('Event ingestion stores complete record with TTL', async () => {
@@ -369,6 +371,7 @@ describe('API Parity with Legacy Service', () => {
     process.env.EVENTS_TABLE = 'motco-events-test';
     process.env.SUBSCRIBERS_TABLE = 'motco-subscribers-test';
     process.env.SNS_TOPIC_ARN_PREFIX = 'arn:aws:sns:us-east-1:123456789:motco-';
+    process.env.ENVIRONMENT = 'dev';
   });
 
   test('POST /api/events returns same fields as legacy', async () => {

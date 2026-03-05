@@ -15,6 +15,7 @@ Globals:
         EVENTS_TABLE: !Ref EventsTable
         SUBSCRIBERS_TABLE: !Ref SubscribersTable
         SNS_TOPIC_ARN_PREFIX: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-'
+        ENVIRONMENT: !Ref Environment
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
 
 Parameters:

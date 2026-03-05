@@ -3,7 +3,7 @@
 const { docClient, GetCommand, UpdateCommand } = require('../../shared/dynamodb');
 const { publishToTopic } = require('../../shared/sns');
 const { buildResponse } = require('../../shared/response');
-const { getEventsTable, getSnsTopicArnPrefix } = require('../../shared/constants');
+const { getEventsTable, buildTopicArn } = require('../../shared/constants');
 
 /**
  * Lambda handler for retrying failed event deliveries.
@@ -41,7 +41,7 @@ async function handler(event) {
     const eventRecord = result.Item;
 
     // Republish to SNS topic for redelivery
-    const topicArn = `${getSnsTopicArnPrefix()}${eventRecord.type}`;
+    const topicArn = buildTopicArn(eventRecord.type);
     const snsMessage = {
       id: eventRecord.eventId,
       type: eventRecord.type,

@@ -31,6 +31,7 @@ describe('eventRetry Lambda', () => {
     jest.clearAllMocks();
     process.env.EVENTS_TABLE = 'test-events-table';
     process.env.SNS_TOPIC_ARN_PREFIX = 'arn:aws:sns:us-east-1:123456789:motco-';
+    process.env.ENVIRONMENT = 'dev';
   });
 
   test('should republish event to SNS for retry', async () => {
@@ -67,7 +68,7 @@ describe('eventRetry Lambda', () => {
 
     // Verify SNS publish with isRetry flag
     expect(publishToTopic).toHaveBeenCalledWith(
-      'arn:aws:sns:us-east-1:123456789:motco-SHIPMENT_DEPARTED',
+      'arn:aws:sns:us-east-1:123456789:motco-SHIPMENT_DEPARTED-dev',
       expect.objectContaining({
         id: 'evt-123',
         isRetry: true,

@@ -78,6 +78,20 @@ function getSnsTopicArnPrefix() {
   return process.env.SNS_TOPIC_ARN_PREFIX || '';
 }
 
+/** Environment name (read at runtime) */
+function getEnvironment() {
+  return process.env.ENVIRONMENT || 'dev';
+}
+
+/**
+ * Build the full SNS topic ARN for a given notification type.
+ * Topic naming convention: motco-{TYPE}-{ENVIRONMENT}
+ * e.g. arn:aws:sns:us-east-1:123456789:motco-MANIFEST_READY-dev
+ */
+function buildTopicArn(notificationType) {
+  return `${getSnsTopicArnPrefix()}${notificationType}-${getEnvironment()}`;
+}
+
 module.exports = {
   NOTIFICATION_TYPES,
   VALID_NOTIFICATION_TYPES,
@@ -87,4 +101,6 @@ module.exports = {
   getEventsTable,
   getSubscribersTable,
   getSnsTopicArnPrefix,
+  getEnvironment,
+  buildTopicArn,
 };

@@ -8,7 +8,7 @@ const { buildResponse } = require('../../shared/response');
 const {
   NOTIFICATION_TYPES,
   getEventsTable,
-  getSnsTopicArnPrefix,
+  buildTopicArn,
   EVENT_TTL_SECONDS,
 } = require('../../shared/constants');
 
@@ -63,7 +63,7 @@ async function handler(event) {
     );
 
     // Publish to SNS topic for fan-out
-    const topicArn = `${getSnsTopicArnPrefix()}${type}`;
+    const topicArn = buildTopicArn(type);
     const snsMessage = {
       id: eventId,
       type,

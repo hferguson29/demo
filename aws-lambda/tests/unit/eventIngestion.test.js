@@ -36,6 +36,7 @@ describe('eventIngestion Lambda', () => {
     jest.clearAllMocks();
     process.env.EVENTS_TABLE = 'test-events-table';
     process.env.SNS_TOPIC_ARN_PREFIX = 'arn:aws:sns:us-east-1:123456789:motco-';
+    process.env.ENVIRONMENT = 'dev';
   });
 
   test('should ingest a valid MANIFEST_READY event', async () => {
@@ -67,9 +68,9 @@ describe('eventIngestion Lambda', () => {
     // Verify DynamoDB put was called
     expect(docClient.send).toHaveBeenCalledTimes(1);
 
-    // Verify SNS publish was called with correct topic ARN
+    // Verify SNS publish was called with correct topic ARN (includes environment suffix)
     expect(publishToTopic).toHaveBeenCalledWith(
-      'arn:aws:sns:us-east-1:123456789:motco-MANIFEST_READY',
+      'arn:aws:sns:us-east-1:123456789:motco-MANIFEST_READY-dev',
       expect.objectContaining({
         id: 'test-event-id-123',
         type: 'MANIFEST_READY',
