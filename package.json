@@ -1,0 +1,15 @@
+{
+  "name": "motco-notification-service",
+  "version": "1.0.0",
+  "description": "On-premise notification service for JDDE movement coordination — handles shipment status events, delay alerts, and sustainment triggers between logistics systems (CMOS, GATES, SMS, DTTS).",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "uuid": "^9.0.0",
+    "winston": "^3.11.0"
+  }
+}
