@@ -1,0 +1,1159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  MOTCO Notification Service - AWS Lambda Migration
+  Replaces legacy on-premise Express.js notification service with serverless
+  architecture using API Gateway, Lambda, SNS, SQS, and DynamoDB.
+
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        EVENTS_TABLE: !Ref EventsTable
+        SUBSCRIBERS_TABLE: !Ref SubscribersTable
+        SNS_TOPIC_ARN_PREFIX: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-'
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+
+Resources:
+  # ============================================================
+  # API GATEWAY
+  # ============================================================
+  MotcoApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'motco-notification-api-${Environment}'
+      StageName: !Ref Environment
+      Description: MOTCO Notification Service API Gateway
+      Cors:
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+
+  # ============================================================
+  # DYNAMODB TABLES
+  # ============================================================
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'motco-events-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+        - AttributeName: type
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+        - AttributeName: tcn
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: type-createdAt-index
+          KeySchema:
+            - AttributeName: type
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: tcn-index
+          KeySchema:
+            - AttributeName: tcn
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  SubscribersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'motco-subscribers-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: subscriberId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: subscriberId
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ============================================================
+  # SNS TOPICS (one per notification type)
+  # ============================================================
+  ManifestReadyTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'motco-MANIFEST_READY-${Environment}'
+      DisplayName: MOTCO Manifest Ready Notifications
+
+  ShipmentDepartedTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'motco-SHIPMENT_DEPARTED-${Environment}'
+      DisplayName: MOTCO Shipment Departed Notifications
+
+  ShipmentDelayedTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'motco-SHIPMENT_DELAYED-${Environment}'
+      DisplayName: MOTCO Shipment Delayed Notifications
+
+  RfidScanEventTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'motco-RFID_SCAN_EVENT-${Environment}'
+      DisplayName: MOTCO RFID Scan Event Notifications
+
+  SustainmentRequestTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'motco-SUSTAINMENT_REQUEST-${Environment}'
+      DisplayName: MOTCO Sustainment Request Notifications
+
+  DiversionAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'motco-DIVERSION_ALERT-${Environment}'
+      DisplayName: MOTCO Diversion Alert Notifications
+
+  # ============================================================
+  # SQS QUEUES + DLQs (one per downstream system)
+  # ============================================================
+
+  # --- GATES ---
+  GatesDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-gates-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  GatesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-gates-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt GatesDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  GatesQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref GatesQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt GatesQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  GatesManifestReadySubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ManifestReadyTopic
+      Protocol: sqs
+      Endpoint: !GetAtt GatesQueue.Arn
+      RawMessageDelivery: false
+
+  GatesDiversionAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DiversionAlertTopic
+      Protocol: sqs
+      Endpoint: !GetAtt GatesQueue.Arn
+      RawMessageDelivery: false
+
+  # --- ICODES ---
+  IcodesDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-icodes-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  IcodesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-icodes-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IcodesDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  IcodesQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref IcodesQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt IcodesQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  IcodesManifestReadySubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ManifestReadyTopic
+      Protocol: sqs
+      Endpoint: !GetAtt IcodesQueue.Arn
+      RawMessageDelivery: false
+
+  # --- SMS ---
+  SmsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-sms-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  SmsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-sms-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SmsDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  SmsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref SmsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt SmsQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  SmsManifestReadySubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ManifestReadyTopic
+      Protocol: sqs
+      Endpoint: !GetAtt SmsQueue.Arn
+      RawMessageDelivery: false
+
+  SmsShipmentDepartedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ShipmentDepartedTopic
+      Protocol: sqs
+      Endpoint: !GetAtt SmsQueue.Arn
+      RawMessageDelivery: false
+
+  SmsShipmentDelayedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ShipmentDelayedTopic
+      Protocol: sqs
+      Endpoint: !GetAtt SmsQueue.Arn
+      RawMessageDelivery: false
+
+  SmsDiversionAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DiversionAlertTopic
+      Protocol: sqs
+      Endpoint: !GetAtt SmsQueue.Arn
+      RawMessageDelivery: false
+
+  # --- DTTS ---
+  DttsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-dtts-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  DttsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-dtts-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DttsDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  DttsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref DttsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt DttsQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  DttsShipmentDepartedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ShipmentDepartedTopic
+      Protocol: sqs
+      Endpoint: !GetAtt DttsQueue.Arn
+      RawMessageDelivery: false
+
+  DttsDiversionAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DiversionAlertTopic
+      Protocol: sqs
+      Endpoint: !GetAtt DttsQueue.Arn
+      RawMessageDelivery: false
+
+  # --- GTN ---
+  GtnDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-gtn-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  GtnQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-gtn-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt GtnDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  GtnQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref GtnQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt GtnQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  GtnShipmentDepartedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ShipmentDepartedTopic
+      Protocol: sqs
+      Endpoint: !GetAtt GtnQueue.Arn
+      RawMessageDelivery: false
+
+  GtnRfidScanSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref RfidScanEventTopic
+      Protocol: sqs
+      Endpoint: !GetAtt GtnQueue.Arn
+      RawMessageDelivery: false
+
+  GtnDiversionAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DiversionAlertTopic
+      Protocol: sqs
+      Endpoint: !GetAtt GtnQueue.Arn
+      RawMessageDelivery: false
+
+  # --- RF_ITV ---
+  RfItvDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-rf-itv-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  RfItvQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-rf-itv-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RfItvDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  RfItvQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref RfItvQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt RfItvQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  RfItvRfidScanSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref RfidScanEventTopic
+      Protocol: sqs
+      Endpoint: !GetAtt RfItvQueue.Arn
+      RawMessageDelivery: false
+
+  # --- CMOS ---
+  CmosDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-cmos-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  CmosQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-cmos-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CmosDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  CmosQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref CmosQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt CmosQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  CmosSustainmentRequestSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SustainmentRequestTopic
+      Protocol: sqs
+      Endpoint: !GetAtt CmosQueue.Arn
+      RawMessageDelivery: false
+
+  # --- PLANNING_SYSTEMS ---
+  PlanningSystemsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-planning-systems-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600
+
+  PlanningSystemsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'motco-planning-systems-${Environment}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PlanningSystemsDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  PlanningSystemsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref PlanningSystemsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt PlanningSystemsQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+
+  PlanningSystemsShipmentDelayedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ShipmentDelayedTopic
+      Protocol: sqs
+      Endpoint: !GetAtt PlanningSystemsQueue.Arn
+      RawMessageDelivery: false
+
+  PlanningSystemsSustainmentRequestSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SustainmentRequestTopic
+      Protocol: sqs
+      Endpoint: !GetAtt PlanningSystemsQueue.Arn
+      RawMessageDelivery: false
+
+  PlanningSystemsDiversionAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DiversionAlertTopic
+      Protocol: sqs
+      Endpoint: !GetAtt PlanningSystemsQueue.Arn
+      RawMessageDelivery: false
+
+  # ============================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================
+
+  # --- Event Ingestion ---
+  EventIngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-event-ingestion-${Environment}'
+      Handler: src/functions/eventIngestion/index.handler
+      CodeUri: .
+      Description: Receives events via API Gateway, stores in DynamoDB, publishes to SNS
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub 'motco-*-${Environment}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+      Events:
+        PostEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/events
+            Method: post
+
+  # --- Event Query ---
+  EventQueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-event-query-${Environment}'
+      Handler: src/functions/eventQuery/index.handler
+      CodeUri: .
+      Description: Handles GET requests for event retrieval and listing
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        GetEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/events/{id}
+            Method: get
+        ListEvents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/events
+            Method: get
+
+  # --- Event Retry ---
+  EventRetryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-event-retry-${Environment}'
+      Handler: src/functions/eventRetry/index.handler
+      CodeUri: .
+      Description: Republishes failed events to SNS for redelivery
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:motco-*'
+      Events:
+        RetryEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/events/{id}/retry
+            Method: post
+
+  # --- Subscriber Management ---
+  SubscriberManagementFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-subscriber-mgmt-${Environment}'
+      Handler: src/functions/subscriberManagement/index.handler
+      CodeUri: .
+      Description: Manages subscriber registration and removal in DynamoDB
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscribersTable
+      Events:
+        Subscribe:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/subscribe
+            Method: post
+        Unsubscribe:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/subscribe/{subscriberId}
+            Method: delete
+        ListSubscribers:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/subscribe
+            Method: get
+
+  # --- Health Check ---
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-health-${Environment}'
+      Handler: src/functions/health/index.handler
+      CodeUri: .
+      Description: Health check endpoint
+      Events:
+        Health:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MotcoApi
+            Path: /api/health
+            Method: get
+
+  # --- Delivery Processor (one per downstream system) ---
+  GatesDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-gates-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for GATES delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: GATES
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt GatesQueue.Arn
+            BatchSize: 1
+
+  IcodesDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-icodes-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for ICODES delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: ICODES
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IcodesQueue.Arn
+            BatchSize: 1
+
+  SmsDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-sms-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for SMS delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: SMS
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SmsQueue.Arn
+            BatchSize: 1
+
+  DttsDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-dtts-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for DTTS delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: DTTS
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt DttsQueue.Arn
+            BatchSize: 1
+
+  GtnDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-gtn-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for GTN delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: GTN
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt GtnQueue.Arn
+            BatchSize: 1
+
+  RfItvDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-rf-itv-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for RF-ITV delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: RF_ITV
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RfItvQueue.Arn
+            BatchSize: 1
+
+  CmosDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-cmos-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for CMOS delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: CMOS
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CmosQueue.Arn
+            BatchSize: 1
+
+  PlanningSystemsDeliveryProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-delivery-planning-${Environment}'
+      Handler: src/functions/deliveryProcessor/index.handler
+      CodeUri: .
+      Description: Processes SQS messages for Planning Systems delivery
+      Environment:
+        Variables:
+          TARGET_SYSTEM: PLANNING_SYSTEMS
+          TARGET_ENDPOINT: ''
+          DELIVERY_TIMEOUT: '30000'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PlanningSystemsQueue.Arn
+            BatchSize: 1
+
+  # --- DLQ Processors ---
+  GatesDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-gates-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for GATES
+      Environment:
+        Variables:
+          TARGET_SYSTEM: GATES
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt GatesDeadLetterQueue.Arn
+            BatchSize: 1
+
+  IcodesDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-icodes-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for ICODES
+      Environment:
+        Variables:
+          TARGET_SYSTEM: ICODES
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IcodesDeadLetterQueue.Arn
+            BatchSize: 1
+
+  SmsDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-sms-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for SMS
+      Environment:
+        Variables:
+          TARGET_SYSTEM: SMS
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SmsDeadLetterQueue.Arn
+            BatchSize: 1
+
+  DttsDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-dtts-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for DTTS
+      Environment:
+        Variables:
+          TARGET_SYSTEM: DTTS
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt DttsDeadLetterQueue.Arn
+            BatchSize: 1
+
+  GtnDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-gtn-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for GTN
+      Environment:
+        Variables:
+          TARGET_SYSTEM: GTN
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt GtnDeadLetterQueue.Arn
+            BatchSize: 1
+
+  RfItvDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-rf-itv-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for RF-ITV
+      Environment:
+        Variables:
+          TARGET_SYSTEM: RF_ITV
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RfItvDeadLetterQueue.Arn
+            BatchSize: 1
+
+  CmosDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-cmos-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for CMOS
+      Environment:
+        Variables:
+          TARGET_SYSTEM: CMOS
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CmosDeadLetterQueue.Arn
+            BatchSize: 1
+
+  PlanningSystemsDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'motco-dlq-planning-${Environment}'
+      Handler: src/functions/dlqProcessor/index.handler
+      CodeUri: .
+      Description: Processes dead letter messages for Planning Systems
+      Environment:
+        Variables:
+          TARGET_SYSTEM: PLANNING_SYSTEMS
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PlanningSystemsDeadLetterQueue.Arn
+            BatchSize: 1
+
+  # ============================================================
+  # CLOUDWATCH ALARMS (DLQ Depth Monitoring)
+  # ============================================================
+  GatesDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-gates-dlq-depth-${Environment}'
+      AlarmDescription: GATES dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt GatesDeadLetterQueue.QueueName
+
+  IcodesDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-icodes-dlq-depth-${Environment}'
+      AlarmDescription: ICODES dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt IcodesDeadLetterQueue.QueueName
+
+  SmsDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-sms-dlq-depth-${Environment}'
+      AlarmDescription: SMS dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SmsDeadLetterQueue.QueueName
+
+  DttsDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-dtts-dlq-depth-${Environment}'
+      AlarmDescription: DTTS dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DttsDeadLetterQueue.QueueName
+
+  GtnDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-gtn-dlq-depth-${Environment}'
+      AlarmDescription: GTN dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt GtnDeadLetterQueue.QueueName
+
+  RfItvDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-rf-itv-dlq-depth-${Environment}'
+      AlarmDescription: RF-ITV dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt RfItvDeadLetterQueue.QueueName
+
+  CmosDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-cmos-dlq-depth-${Environment}'
+      AlarmDescription: CMOS dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt CmosDeadLetterQueue.QueueName
+
+  PlanningSystemsDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'motco-planning-dlq-depth-${Environment}'
+      AlarmDescription: Planning Systems dead letter queue has messages — deliveries permanently failing
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PlanningSystemsDeadLetterQueue.QueueName
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${MotcoApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  EventsTableName:
+    Description: DynamoDB Events table name
+    Value: !Ref EventsTable
+
+  SubscribersTableName:
+    Description: DynamoDB Subscribers table name
+    Value: !Ref SubscribersTable
+
+  ManifestReadyTopicArn:
+    Description: SNS Topic ARN for MANIFEST_READY events
+    Value: !Ref ManifestReadyTopic
+
+  ShipmentDepartedTopicArn:
+    Description: SNS Topic ARN for SHIPMENT_DEPARTED events
+    Value: !Ref ShipmentDepartedTopic
+
+  ShipmentDelayedTopicArn:
+    Description: SNS Topic ARN for SHIPMENT_DELAYED events
+    Value: !Ref ShipmentDelayedTopic
+
+  RfidScanEventTopicArn:
+    Description: SNS Topic ARN for RFID_SCAN_EVENT events
+    Value: !Ref RfidScanEventTopic
+
+  SustainmentRequestTopicArn:
+    Description: SNS Topic ARN for SUSTAINMENT_REQUEST events
+    Value: !Ref SustainmentRequestTopic
+
+  DiversionAlertTopicArn:
+    Description: SNS Topic ARN for DIVERSION_ALERT events
+    Value: !Ref DiversionAlertTopic
