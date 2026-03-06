@@ -26,7 +26,8 @@ async function handler(event) {
       let eventData;
       try {
         const outerMessage = JSON.parse(record.body);
-        eventData = JSON.parse(outerMessage.Message || outerMessage.body || record.body);
+        const innerPayload = outerMessage.Message || outerMessage.body;
+        eventData = innerPayload ? JSON.parse(innerPayload) : outerMessage;
       } catch (parseErr) {
         eventData = { id: 'unknown', type: 'unknown', tcn: 'unknown' };
         console.error(`Failed to parse DLQ message: ${parseErr.message}`);
