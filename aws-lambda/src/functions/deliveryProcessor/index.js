@@ -25,7 +25,8 @@ async function handler(event) {
     try {
       // Parse the SNS message wrapped in SQS
       const snsMessage = JSON.parse(record.body);
-      const eventData = JSON.parse(snsMessage.Message || snsMessage.body || record.body);
+      const innerPayload = snsMessage.Message || snsMessage.body;
+      const eventData = innerPayload ? JSON.parse(innerPayload) : snsMessage;
 
       // The target system is determined by the queue that triggered this Lambda
       // (configured via environment variable)
@@ -53,7 +54,8 @@ async function handler(event) {
       // Update delivery status to FAILED
       try {
         const snsMessage = JSON.parse(record.body);
-        const eventData = JSON.parse(snsMessage.Message || snsMessage.body || record.body);
+        const innerPayload = snsMessage.Message || snsMessage.body;
+        const eventData = innerPayload ? JSON.parse(innerPayload) : snsMessage;
         const targetSystem = process.env.TARGET_SYSTEM || 'UNKNOWN';
 
         if (eventData.id) {
@@ -83,7 +85,7 @@ async function deliverToEndpoint(endpoint, eventData) {
     const options = {
       hostname: url.hostname,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
-      path: url.pathname,
+      path: url.pathname + url.search,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
